@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebDesk | Browser Screen Sharing</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121d30; --line:#263650; --muted:#9fb0c8; --accent:#69a7ff; --good:#4bd39a; }
+    * { box-sizing:border-box }
+    body { margin:0; font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:#edf4ff; }
+    main { width:min(980px, 94vw); margin:36px auto; }
+    header { margin-bottom:22px }
+    h1 { margin:0; font-size:clamp(28px,5vw,42px) }
+    .sub, .muted { color:var(--muted) }
+    .notice { padding:14px 16px; border:1px solid #7b6331; background:#2b2415; border-radius:12px; margin:18px 0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; margin:14px 0; }
+    h2 { margin:0 0 10px; font-size:20px }
+    button { border:0; border-radius:10px; padding:11px 15px; background:var(--accent); color:#071426; font-weight:700; cursor:pointer; margin:5px 5px 5px 0; }
+    button.secondary { background:#293a55; color:#edf4ff; }
+    button:disabled { opacity:.45; cursor:not-allowed }
+    textarea { width:100%; min-height:150px; resize:vertical; background:#08101d; color:#e7f0ff; border:1px solid var(--line); border-radius:10px; padding:12px; font:12px/1.4 ui-monospace,monospace; }
+    video { width:100%; background:#05080e; border-radius:12px; min-height:180px; max-height:65vh; }
+    .status { display:inline-block; padding:5px 10px; border-radius:999px; background:#263650; color:#dce9ff; font-size:13px; }
+    .steps { color:var(--muted); padding-left:20px }
+    .hidden { display:none }
+    footer { color:var(--muted); font-size:13px; margin:22px 0 40px }
+    a { color:#9dc4ff }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>WebDesk</h1>
+    <div class="sub">Consent-based browser screen sharing. No app installation.</div>
+  </header>
+
+  <div class="notice">
+    <strong>Important:</strong> This demo shares a screen for viewing only. It cannot remotely move the mouse,
+    type on the other computer, or access its files. The person sharing must choose a screen and can stop sharing
+    at any time. Never share with someone you do not trust.
+  </div>
+
+  <section>
+    <h2>1. Choose your role</h2>
+    <div class="grid">
+      <div>
+        <p><strong>Share this computer</strong><br><span class="muted">Use this on the computer whose screen will be viewed.</span></p>
+        <button id="shareRole">I am sharing</button>
+      </div>
+      <div>
+        <p><strong>Watch another computer</strong><br><span class="muted">Use this on the computer that will view the shared screen.</span></p>
+        <button class="secondary" id="watchRole">I am watching</button>
+      </div>
+    </div>
+    <p><span id="status" class="status">Not connected</span></p>
+  </section>
+
+  <section id="sharePanel" class="hidden">
+    <h2>2. Share your screen</h2>
+    <p class="muted">Click the button and choose what you want to share in the browser's permission dialog.</p>
+    <button id="startShare">Choose screen and create connection code</button>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <h2>3. Send this offer code to the viewer</h2>
+    <textarea id="offerOut" readonly placeholder="Your offer code will appear here..."></textarea>
+    <button class="secondary" id="copyOffer">Copy offer</button>
+    <h2>4. Paste the answer code from the viewer</h2>
+    <textarea id="answerIn" placeholder="Paste the viewer's answer code here..."></textarea>
+    <button id="applyAnswer">Connect to viewer</button>
+    <button class="secondary" id="stopShare">Stop sharing</button>
+  </section>
+
+  <section id="watchPanel" class="hidden">
+    <h2>2. Paste the offer code from the person sharing</h2>
+    <textarea id="offerIn" placeholder="Paste the offer code here..."></textarea>
+    <button id="createAnswer">Create answer code</button>
+    <h2>3. Send this answer code back to the person sharing</h2>
+    <textarea id="answerOut" readonly placeholder="Your answer code will appear here..."></textarea>
+    <button class="secondary" id="copyAnswer">Copy answer</button>
+    <h2>4. Shared screen</h2>
+    <video id="remoteVideo" autoplay playsinline controls></video>
+  </section>
+
+  <section>
+    <h2>How to connect across two locations</h2>
+    <ol class="steps">
+      <li>Both people open the published HTTPS website.</li>
+      <li>The sharing person chooses <em>I am sharing</em> and selects a screen/window.</li>
+      <li>They send the offer code to the viewer using a private, trusted method.</li>
+      <li>The viewer chooses <em>I am watching</em>, pastes the offer, creates an answer, and sends it back.</li>
+      <li>The sharing person pastes the answer and clicks Connect to viewer.</li>
+    </ol>
+    <p class="muted">This prototype uses manual code exchange instead of a signalling server. Some networks may block a direct WebRTC connection; this free demo does not include a relay (TURN) server.</p>
+  </section>
+
+  <footer>
+    WebDesk is a demonstration project, not a secure enterprise remote-support product. Use only with the clear permission
+    of the person sharing their screen. Do not paste connection codes into public chats.
+  </footer>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let pc = null, localStream = null;
+  const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+  function status(message) { $("status").textContent = message; }
+  function show(panel) {
+    $("sharePanel").classList.toggle("hidden", panel !== "share");
+    $("watchPanel").classList.toggle("hidden", panel !== "watch");
+    status(panel === "share" ? "Sharing setup" : "Viewer setup");
+  }
+  function makePeer() {
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(config);
+    pc.onconnectionstatechange = () => status("Connection: " + pc.connectionState);
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "failed") status("Connection failed. This network may need a relay server.");
+    };
+    pc.ontrack = event => {
+      $("remoteVideo").srcObject = event.streams[0];
+      status("Connected: viewing shared screen");
+    };
+    return pc;
+  }
+  function waitForIce(peer) {
+    if (peer.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise(resolve => {
+      const timeout = setTimeout(resolve, 12000);
+      peer.addEventListener("icegatheringstatechange", () => {
+        if (peer.iceGatheringState === "complete") { clearTimeout(timeout); resolve(); }
+      });
+    });
+  }
+  function encode(desc) { return btoa(unescape(encodeURIComponent(JSON.stringify(desc)))); }
+  function decode(value) { return JSON.parse(decodeURIComponent(escape(atob(value.trim())))); }
+  async function copy(id) {
+    const value = $(id).value;
+    if (!value) return alert("There is no code to copy yet.");
+    try { await navigator.clipboard.writeText(value); alert("Copied."); }
+    catch { $(id).select(); document.execCommand("copy"); alert("Copy the selected code."); }
+  }
+
+  $("shareRole").onclick = () => show("share");
+  $("watchRole").onclick = () => show("watch");
+
+  $("startShare").onclick = async () => {
+    try {
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing is not available. Open this site over HTTPS in a supported browser.");
+      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      $("localVideo").srcObject = localStream;
+      const peer = makePeer();
+      localStream.getTracks().forEach(track => {
+        peer.addTrack(track, localStream);
+        track.onended = () => { status("Screen sharing stopped"); };
+      });
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      status("Preparing offer code...");
+      await waitForIce(peer);
+      $("offerOut").value = encode(peer.localDescription);
+      status("Offer ready. Send it privately to the viewer.");
+    } catch (error) {
+      status("Could not start sharing");
+      alert(error.message || String(error));
+    }
+  };
+
+  $("createAnswer").onclick = async () => {
+    try {
+      const peer = makePeer();
+      await peer.setRemoteDescription(decode($("offerIn").value));
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      status("Preparing answer code...");
+      await waitForIce(peer);
+      $("answerOut").value = encode(peer.localDescription);
+      status("Answer ready. Send it privately to the sharing person.");
+    } catch (error) {
+      alert("Could not create answer. Check that the offer code was copied completely.\n" + error.message);
+    }
+  };
+
+  $("applyAnswer").onclick = async () => {
+    try {
+      if (!pc) throw new Error("Start screen sharing first.");
+      await pc.setRemoteDescription(decode($("answerIn").value));
+      status("Answer accepted. Connecting...");
+    } catch (error) {
+      alert("Could not apply answer. Check that the answer code was copied completely.\n" + error.message);
+    }
+  };
+
+  $("copyOffer").onclick = () => copy("offerOut");
+  $("copyAnswer").onclick = () => copy("answerOut");
+  $("stopShare").onclick = () => {
+    if (localStream) localStream.getTracks().forEach(track => track.stop());
+    if (pc) pc.close();
+    $("localVideo").srcObject = null;
+    $("remoteVideo").srcObject = null;
+    status("Sharing stopped");
+  };
+
+  if (!window.isSecureContext) status("Open this site using HTTPS for screen sharing");
+})();
+</script>
+</body>
+</html>
